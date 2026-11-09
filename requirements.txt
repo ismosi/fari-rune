@@ -1,0 +1,6 @@
+gradio>=4.44
+yt-dlp>=2024.8.6
+sherpa-onnx>=1.10.0
+numpy>=1.26
+requests>=2.31
+imageio-ffmpeg>=0.5

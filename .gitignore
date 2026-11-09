@@ -1,0 +1,18 @@
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 虚拟环境（可由 requirements.txt 重建）
+venv/
+
+# 语音模型（约 250MB，首次运行自动下载）
+models/
+
+# 转写结果（个人使用记录）
+outputs/
+
+# 运行日志（含访问过的 URL）
+run.log
+
+# 转写临时文件（运行时自动创建/删除）
+tmp/
