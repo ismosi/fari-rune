@@ -9,6 +9,8 @@
 
 ## 安装（仅首次）
 
+要求 Python 3.10 及以上（用 `python3 --version` 检查）。
+
 ```bash
 # 1. 安装 ffmpeg（音轨提取）
 brew install ffmpeg
