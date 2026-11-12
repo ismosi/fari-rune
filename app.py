@@ -4,6 +4,7 @@
 全程本地运行，音频不上传任何服务器。
 """
 
+import json
 import re
 import shutil
 import subprocess
@@ -22,8 +23,11 @@ import yt_dlp
 # ---------- 常量 ----------
 
 ROOT = Path(__file__).resolve().parent
-TMP_DIR = ROOT / "tmp"      # 临时音频文件
-OUT_DIR = ROOT / "outputs"  # 转写结果 TXT
+TMP_DIR = ROOT / "tmp"              # 临时音频文件
+OUT_DIR = ROOT / "outputs"          # 转写结果 TXT
+HISTORY_FILE = OUT_DIR / "history.json"  # 历史记录（链接 + 全文）
+TIME_FMT = "%Y-%m-%d %H:%M"   # 历史时间戳格式（字符串排序即时间排序）
+PREVIEW_CHARS = 60            # 历史列表里的文字预览长度
 MODEL_DIR = ROOT / "models" / "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
 MODEL_URL = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
@@ -198,67 +202,191 @@ def sanitize_filename(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|]', "_", name).strip()[:80] or "result"
 
 
+# ---------- 历史记录 ----------
+
+def load_history() -> list[dict]:
+    """读取历史记录（新→旧）。首次运行时把旧 outputs/*.txt 导入（无链接信息）。"""
+    if HISTORY_FILE.exists():
+        try:
+            return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            print("history.json 损坏，重新从 outputs/*.txt 导入。")
+
+    entries: list[dict] = []
+    for txt in OUT_DIR.glob("*.txt"):
+        try:
+            entries.append({
+                "url": "",
+                "title": txt.stem,
+                "text": txt.read_text(encoding="utf-8", errors="replace"),
+                "time": time.strftime(TIME_FMT, time.localtime(txt.stat().st_mtime)),
+            })
+        except OSError:
+            continue
+    entries.sort(key=lambda e: e["time"], reverse=True)
+    save_history(entries)
+    return entries
+
+
+def save_history(entries: list[dict]) -> None:
+    """历史记录写入磁盘。"""
+    HISTORY_FILE.write_text(
+        json.dumps(entries, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def entry_key(e: dict) -> str:
+    """条目唯一键，用于复制/下载时定位选中项。"""
+    return f'{e["time"]}|{e["title"]}'
+
+
+def find_entry(key: str, entries: list[dict]) -> dict | None:
+    """按键定位条目，找不到返回 None。"""
+    return next((e for e in entries if entry_key(e) == key), None)
+
+
+def history_to_samples(entries: list[dict]) -> list[list[str]]:
+    """把历史记录转成 Dataset 行：标题 / 链接 / 内容预览。"""
+    rows = []
+    for e in entries:
+        preview = re.sub(r"\s+", " ", e["text"]).strip()[:PREVIEW_CHARS]
+        rows.append([e["title"], e["url"] or "（导入自旧文件，无链接）", preview])
+    return rows
+
+
 # ---------- 主流程 ----------
 
 def run(url: str, progress=gr.Progress()):
-    """Gradio 主流程：下载 → 转码 → 分块转写 → 输出 TXT。"""
+    """Gradio 主流程：下载 → 转码 → 分块转写 → 输出 TXT，并写入历史。"""
+    history = load_history()
+    rows = history_to_samples(history)  # 转写过程中历史不变，先备好
     url = (url or "").strip()
     if not url:
-        yield "请先粘贴视频链接。", "", None
+        yield "请先粘贴视频链接。", "", None, rows, history
         return
 
     try:
         rec = load_recognizer()
-        yield "①/4 模型就绪，正在下载音频 ...", "", None
+        yield "①/4 模型就绪，正在下载音频 ...", "", None, rows, history
         audio, title = download_audio(url, TMP_DIR)
 
-        yield "②/4 提取音轨中 ...", "", None
+        yield "②/4 提取音轨中 ...", "", None, rows, history
         wav = audio_to_wav(audio)
-        samples = read_wav(wav)
+        waveform = read_wav(wav)
 
-        chunks = split_chunks(samples, SAMPLE_RATE)
+        chunks = split_chunks(waveform, SAMPLE_RATE)
         texts: list[str] = []
         for i, chunk in enumerate(chunks, 1):
             texts.append(decode_chunk(rec, chunk))
             desc = f"③/4 转写中 第 {i}/{len(chunks)} 块"
             progress(i / len(chunks), desc=desc)
-            yield desc, "", None
+            yield desc, "", None, rows, history
 
         text = format_text("".join(texts))
         out_path = OUT_DIR / f"{sanitize_filename(title)}.txt"
         out_path.write_text(text, encoding="utf-8")
-        yield f"④/4 完成：《{title}》", text, str(out_path)
+
+        entry = {"url": url, "title": title, "text": text, "time": time.strftime(TIME_FMT)}
+        history = [e for e in history if e["url"] != url]  # 同链接只保留最新一条
+        history.insert(0, entry)
+        save_history(history)
+        yield f"④/4 完成：《{title}》", text, str(out_path), history_to_samples(history), history
     except Exception as e:  # noqa: BLE001 — 界面上直接展示失败原因
-        yield f"失败：{e}", "", None
+        yield f"失败：{e}", "", None, rows, history
     finally:
         shutil.rmtree(TMP_DIR, ignore_errors=True)
 
 
 # ---------- 界面 ----------
 
+def on_history_select(index: int, history: list[dict]):
+    """点击历史条目：回填链接 / 状态 / 转写结果，并记住选中项。"""
+    if not 0 <= index < len(history):
+        return "", "", "", "", ""
+    e = history[index]
+    time_note = f"（{e['time']}）" if e["time"] else ""
+    return (
+        e["url"],
+        f"已转写：《{e['title']}》{time_note}",
+        e["text"],
+        entry_key(e),
+        e["text"],
+    )
+
+
+def download_history(key: str, history: list[dict]):
+    """把选中的历史导出为 TXT（outputs/ 下缺失时补写）。"""
+    e = find_entry(key, history)
+    if e is None:
+        return None
+    path = OUT_DIR / f"{sanitize_filename(e['title'])}.txt"
+    if not path.exists():
+        path.write_text(e["text"], encoding="utf-8")
+    return str(path)
+
+
 def build_demo() -> gr.Blocks:
+    history = load_history()
+
     with gr.Blocks(title="fari-rune 视频转文字") as demo:
         gr.Markdown(
             "## fari-rune\n"
             "粘贴 B 站 / 微博视频链接，本地转写为纯文本。"
         )
-        url = gr.Textbox(
-            label="视频链接",
-            placeholder="https://www.bilibili.com/video/... 或微博视频链接",
+
+        with gr.Row():
+            # ----- 左侧：历史目录 -----
+            with gr.Column(scale=1):
+                gr.Markdown("### 历史记录")
+                history_state = gr.State(history)  # 与历史列表同源的条目数据
+                history_ds = gr.Dataset(
+                    headers=["标题", "链接", "内容预览"],
+                    components=["textbox", "textbox", "textbox"],
+                    samples=history_to_samples(history),
+                    type="index",  # 点击回调直接拿到行索引
+                    samples_per_page=1000,  # 全部展示，不分页
+                )
+                selected_key = gr.State("")          # 选中条目的键
+                selected_text = gr.Textbox(visible=False)  # 选中条目全文，供复制
+                with gr.Row():
+                    hist_copy_btn = gr.Button("📋 复制", size="sm")
+                    hist_dl_btn = gr.Button("⬇️ 下载", size="sm")
+                hist_file = gr.File(label="历史 TXT", interactive=False)
+
+            # ----- 右侧：转写区 -----
+            with gr.Column(scale=2):
+                url = gr.Textbox(
+                    label="视频链接",
+                    placeholder="https://www.bilibili.com/video/... 或微博视频链接",
+                )
+                btn = gr.Button("开始转写", variant="primary")
+                status = gr.Textbox(label="状态", interactive=False)
+                output = gr.Textbox(label="转写结果", lines=16)
+                copy_btn = gr.Button("📋 复制全文")
+                file = gr.File(label="下载 TXT")
+
+        # 点击历史：回填链接框、状态框、结果框
+        history_ds.click(
+            on_history_select,
+            inputs=[history_ds, history_state],
+            outputs=[url, status, output, selected_key, selected_text],
         )
-        btn = gr.Button("开始转写", variant="primary")
-        status = gr.Textbox(label="状态", interactive=False)
-        output = gr.Textbox(label="转写结果", lines=16)
-        copy_btn = gr.Button("📋 复制全文")
-        copy_btn.click(
+        hist_copy_btn.click(
             fn=None,
-            inputs=[output],
+            inputs=[selected_text],
             outputs=None,
             # 纯前端复制：剪贴板只在 localhost（安全上下文）可用，本项目满足
             js="(text) => { if (text) navigator.clipboard.writeText(text); }",
         )
-        file = gr.File(label="下载 TXT")
-        btn.click(run, inputs=url, outputs=[status, output, file])
+        hist_dl_btn.click(download_history, inputs=[selected_key, history_state], outputs=[hist_file])
+
+        copy_btn.click(
+            fn=None,
+            inputs=[output],
+            outputs=None,
+            js="(text) => { if (text) navigator.clipboard.writeText(text); }",
+        )
+        btn.click(run, inputs=url, outputs=[status, output, file, history_ds, history_state])
     return demo
 
 
