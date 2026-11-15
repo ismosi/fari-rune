@@ -579,7 +579,7 @@ html, body { height: 100%; margin: 0; background: var(--bg-canvas); }
 .gradio-container main.contain > .column > .block { margin: 0 !important; padding: 0 !important; }
 .gradio-container main.contain > .column > .block .html-container { padding: 0 !important; }
 
-/* ---- Footer（44px）：只留最右设置齿轮，18px、悬停旋转 30deg ---- */
+/* ---- Footer（44px）：只留最右设置按钮（「设置」文字 + 18px 齿轮，悬停旋转 30deg）---- */
 .gradio-container footer[aria-label="Gradio footer navigation"] > :not(button.settings) { display: none !important; }
 .gradio-container footer[aria-label="Gradio footer navigation"] {
     height: 44px !important;
@@ -596,19 +596,29 @@ html, body { height: 100%; margin: 0; background: var(--bg-canvas); }
     display: inline-flex !important;
     align-items: center;
     justify-content: center;
+    gap: 6px;
     background: transparent;
     border: none;
     box-shadow: none;
+    color: var(--text-muted);   /* 「设置」文字：冷雾蓝灰（压过 footer 继承的主题浅蓝 #60A5FA） */
+    font-size: 13px;
+    font-weight: 500;
+    transition: color 150ms ease;
 }
-.gradio-container footer[aria-label="Gradio footer navigation"] button.settings svg {
+.gradio-container footer[aria-label="Gradio footer navigation"] > button.settings:hover {
+    color: var(--text-primary); /* 悬停转深海蓝黑：Gradio 自带 hover 把文字刷成近白的 --body-text-color（#DBEAFE），浅底上分不清 */
+}
+/* 齿轮是 data:svg 的 <img>（硬编码 #808080 灰，无头诊断确认）：CSS color 染不动，
+   只能调尺寸 / 悬停加深 / 旋转；svg 选择器命中不了它 */
+.gradio-container footer[aria-label="Gradio footer navigation"] button.settings img {
     width: 18px;
     height: 18px;
-    color: var(--text-muted);
-    transition: transform 150ms ease, color 150ms ease;
+    margin: 0;                  /* 归零 Gradio 默认左右 4px 边距，间距改由 gap 控制 */
+    transition: transform 150ms ease, filter 150ms ease;
 }
-.gradio-container footer[aria-label="Gradio footer navigation"] button.settings:hover svg {
+.gradio-container footer[aria-label="Gradio footer navigation"] button.settings:hover img {
     transform: rotate(30deg);
-    color: var(--text-primary);
+    filter: brightness(0.4);    /* 悬停加深灰齿轮，与深色文字协调 */
 }
 
 /* ---- 窄窗口 ≤768px：解除单屏，恢复整页滚动（组件区规则见 CUSTOM_CSS）---- */
@@ -629,7 +639,7 @@ CUSTOM_CSS = """
 /* fari-rune 前端视觉 —— 「冷静蓝调」设计规格实现（仅 .contain 内部）。
  * 设计 token（:root）与页壳几何在 SHELL_CSS；改色一律改 :root 变量，勿写字面值。
  * 字阶：品牌标题 20/600 · 副标题 13 · 小节标题 12/600/0.06em ·
- *       正文（输入框/结果）15/1.75 · 列表与按钮 13/500 · 状态行 13/24px
+ *       正文（输入框/结果）15/1.75 · 列表与按钮 13/500 · 状态行 13/行高24（条高 34：文字 24 + 底部 10 滚动条带）
  *       （进度/时间/百分比 tabular-nums 防数字抖动）
  */
 
@@ -868,8 +878,23 @@ CUSTOM_CSS = """
 #run-btn:hover { background: var(--accent-hover) !important; }
 #run-btn:disabled { background: var(--accent-disabled) !important; cursor: not-allowed; }
 
-/* 5.2 状态行：24px 固定占位防空态/有态跳动；失败红字由 _status() 切 status-error 类 */
-#status-text { height: 24px !important; flex: 0 0 auto !important; display: flex !important; align-items: center; margin: 0 !important; }
+/* 5.2 状态行：条高 34px（24px 行高 + 底部 10px 滚动条带），固定占位防空态/有态跳动；
+   失败红字由 _status() 切 status-error 类。
+   超宽文字横向滚动看全文，滚动条与链接框同款 thin 蓝灰——省略号方案不可行（无头诊断确认）：
+   Gradio 的 markdown-wrapper 不收缩，「…」截在视口外看不见，右侧还留出一段空白无效滚动区。
+   块自带内联 overflow:auto（此处 !important 显式接管），滚动条与文字的间隙由多出的 10px 提供；
+   p 溢出保持 visible，行框才能撑出块的滚动宽度，滚到右侧能看到完整文字 */
+#status-text {
+    height: 34px !important;
+    flex: 0 0 auto !important;
+    display: flex !important;
+    align-items: center;
+    margin: 0 !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    scrollbar-width: thin;
+    scrollbar-color: #BDD0E7 transparent;
+}
 #trans-col > #status-text { padding: 0 4px !important; }
 #status-text p {
     color: var(--text-status);
@@ -879,8 +904,7 @@ CUSTOM_CSS = """
     font-variant-numeric: tabular-nums;
     margin: 0;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    overflow: visible;
 }
 #status-text.status-error p { color: var(--status-error); }
 
