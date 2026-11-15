@@ -505,8 +505,16 @@ def on_history_select(index: int, history: list[dict]):
 # 前端视觉 = SHELL_CSS（:root 设计 token + 页壳几何）+ CUSTOM_CSS（.contain 内部
 # 规格实现）+ build_theme()（token 引用 :root 变量）。改色只改 :root，勿写死字面值。
 
-# 把 fonts/ 暴露为静态目录，CUSTOM_CSS 里经 /file= 路由引用字体文件
-gr.set_static_paths([str(ROOT / "fonts")])
+# 把 fonts/、assets/ 暴露为静态目录，经 /file= 路由引用（字体文件 / favicon）
+gr.set_static_paths([str(ROOT / "fonts"), str(ROOT / "assets")])
+
+# favicon：SVG 经 head= 注入 <link>，与 SHELL_CSS 同通道——launch(favicon_path)
+# 在 `gradio app.py` 开发模式下带不上（CLI 自己调 launch），head= 才能两模式都生效。
+# 路由用 /gradio_api/file=（Gradio 6.x 静态文件正式前缀，curl 实测 200）；根级
+# /file= 在 6.30 由前端 service worker 兑底，favicon 是浏览器原生请求不保险
+FAVICON_HTML = (
+    '<link rel="icon" type="image/svg+xml" href="/gradio_api/file=assets/icon.svg" />'
+)
 
 # 页壳样式 + 设计 token：必须走 head= 注入的原生 <style>。
 # 为什么不放 CUSTOM_CSS：Gradio 前端会把 css= 里的每条选择器强制改写成
@@ -674,6 +682,7 @@ CUSTOM_CSS = """
     margin: 0;
     border-bottom: 1px solid var(--border-subtle);
 }
+.app-topbar .logo { width: 24px; height: 24px; flex-shrink: 0; display: block; margin-right: -4px; }
 .app-topbar .title { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.2; color: var(--text-primary); }
 .app-topbar .sub { font-size: 13px; font-weight: 400; line-height: 1.4; color: var(--text-muted); }
 
@@ -1075,9 +1084,10 @@ def build_demo() -> gr.Blocks:
     # Gradio 6 把 theme/css 挪到了 launch()，但那会丢掉 `gradio app.py`
     # 开发模式的热重载主题（CLI 自己调 launch，带不上我们的参数），
     # 所以仍传给 Blocks（当前版本仅打一条弃用警告，功能完整）
-    with gr.Blocks(title="fari-rune 视频转文字", theme=build_theme(), css=CUSTOM_CSS, head=SHELL_CSS) as demo:
+    with gr.Blocks(title="fari-rune 视频转文字", theme=build_theme(), css=CUSTOM_CSS, head=SHELL_CSS + FAVICON_HTML) as demo:
         gr.HTML(
             "<div class='app-topbar'>"
+            "<img class='logo' src='/gradio_api/file=assets/icon.svg' alt='' />"
             "<span class='title'>fari-rune</span>"
             "<span class='sub'>粘贴 B 站 / 微博视频链接，本地转写为纯文本</span>"
             "</div>"

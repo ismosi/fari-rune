@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" fill="none">
+  <!-- 1. 声波脉冲（岩石蓝灰：代表视频音轨流） -->
+  <rect
+    x="6" y="9"
+    width="3" height="14"
+    rx="1.5"
+    fill="#435B78"
+  />
+
+  <!-- 2. 文本光标/符文中枢（深海蓝黑：代表转写基准与光标） -->
+  <rect
+    x="13" y="4"
+    width="3" height="24"
+    rx="1.5"
+    fill="#0F233C"
+  />
+
+  <!-- 3. 转写文本·第一行（沉稳钴蓝：长文本行） -->
+  <rect
+    x="19" y="8"
+    width="8" height="3"
+    rx="1.5"
+    fill="#1A5FB4"
+  />
+
+  <!-- 4. 转写文本·第二行（沉稳钴蓝：次行段落） -->
+  <rect
+    x="19" y="15"
+    width="5.5" height="3"
+    rx="1.5"
+    fill="#1A5FB4"
+  />
+</svg>
