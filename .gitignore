@@ -11,6 +11,9 @@ models/
 # 转写结果（个人使用记录）
 outputs/
 
+# 界面字体 MiSans（约 9MB，官方免费商用，首次运行自动下载）
+fonts/
+
 # 运行日志（含访问过的 URL）
 run.log
 
