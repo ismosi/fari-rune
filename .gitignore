@@ -22,3 +22,6 @@ tmp/
 
 # macOS 系统文件（Finder 元数据，含目录内文件名，泄露目录结构）
 .DS_Store
+
+# AI 协作开发指南（本地保留，不入库）
+AGENTS.md
