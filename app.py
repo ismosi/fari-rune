@@ -5,6 +5,7 @@
 """
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -505,6 +506,13 @@ def on_history_select(index: int, history: list[dict]):
 # 前端视觉 = SHELL_CSS（:root 设计 token + 页壳几何）+ CUSTOM_CSS（.contain 内部
 # 规格实现）+ build_theme()（token 引用 :root 变量）。改色只改 :root，勿写死字面值。
 
+# 运行记录彻底关闭：Gradio 6 的 run_history 开关在 launch() 参数上，但
+# `gradio app.py` 开发模式的 CLI 自己调 launch，带不上我们的参数（同
+# footer_links 不走 launch 的原因），环境变量才是两种启动模式都生效的通道。
+# False = 浏览器不再记录运行、已存记录被前端清除、/gradio_api/runs 页 404、
+# 设置弹层对应分区不渲染（CSS 另有兜底）
+os.environ["GRADIO_RUN_HISTORY"] = "false"
+
 # 把 fonts/、assets/ 暴露为静态目录，经 /file= 路由引用（字体文件 / favicon）
 gr.set_static_paths([str(ROOT / "fonts"), str(ROOT / "assets")])
 
@@ -515,6 +523,35 @@ gr.set_static_paths([str(ROOT / "fonts"), str(ROOT / "assets")])
 FAVICON_HTML = (
     '<link rel="icon" type="image/svg+xml" href="/gradio_api/file=assets/icon.svg" />'
 )
+
+# 设置弹层锁死：可配置项（显示主题 / 语言 / 渐进式 Web 应用 / Screen Studio /
+# 运行记录）全部删除，弹层只留标题栏。分区隐藏的 CSS 见 SHELL_CSS「设置弹层精简」，
+# 运行记录另有 GRADIO_RUN_HISTORY=false 环境变量从服务端整体关闭（见常量区）。以下两件必须在 Gradio
+# 前端模块脚本启动前以内联脚本定死（head= 内联脚本先于模块脚本执行，两种启动模式
+# 都生效）：
+# ① 主题锁 Light：Gradio 主题 = ?__theme= URL 参数，缺省跟随系统深浅色。启动前
+#    replaceState 补写 __theme=light（只改本页地址不刷新）；切换 UI 已随分区删除，
+#    URL 参数即唯一事实源，手动输 __theme=dark 也会被改写回 light。
+# ② 语言锁中文：Gradio 前端初始语言取 navigator.language（svelte-i18n，无持久化
+#    键，设置里的语言选择也不落盘），覆写为 zh-CN 走内置中文语言包（弹层标题
+#    「设置」等框架文案）。
+SETTINGS_LOCK_HTML = r"""
+<script>
+(function () {
+  try {
+    var u = new URL(window.location.href);
+    if (u.searchParams.get('__theme') !== 'light') {
+      u.searchParams.set('__theme', 'light');
+      window.history.replaceState(null, '', u.toString());
+    }
+  } catch (e) { /* 地址不可写时退回跟随系统；:root 视觉 token 本身恒为浅色 */ }
+  try {
+    Object.defineProperty(navigator, 'language', { configurable: true, get: function () { return 'zh-CN'; } });
+    Object.defineProperty(navigator, 'languages', { configurable: true, get: function () { return ['zh-CN']; } });
+  } catch (e) { /* 个别环境不允许覆写时，语言跟随浏览器设置 */ }
+})();
+</script>
+"""
 
 # 页壳样式 + 设计 token：必须走 head= 注入的原生 <style>。
 # 为什么不放 CUSTOM_CSS：Gradio 前端会把 css= 里的每条选择器强制改写成
@@ -587,47 +624,19 @@ html, body { height: 100%; margin: 0; background: var(--bg-canvas); }
 .gradio-container main.contain > .column > .block { margin: 0 !important; padding: 0 !important; }
 .gradio-container main.contain > .column > .block .html-container { padding: 0 !important; }
 
-/* ---- Footer（44px）：只留最右设置按钮（「设置」文字 + 18px 齿轮，悬停旋转 30deg）---- */
-.gradio-container footer[aria-label="Gradio footer navigation"] > :not(button.settings) { display: none !important; }
-.gradio-container footer[aria-label="Gradio footer navigation"] {
-    height: 44px !important;
-    flex-shrink: 0 !important;
-    width: 100%;
-    max-width: 1152px;
-    margin: 0 auto !important;
-    padding: 0 24px !important;
-    display: flex !important;
-    justify-content: flex-end !important;
-    align-items: center;
-}
-.gradio-container footer[aria-label="Gradio footer navigation"] > button.settings {
-    display: inline-flex !important;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    background: transparent;
-    border: none;
-    box-shadow: none;
-    color: var(--text-muted);   /* 「设置」文字：冷雾蓝灰（压过 footer 继承的主题浅蓝 #60A5FA） */
-    font-size: 13px;
-    font-weight: 500;
-    transition: color 150ms ease;
-}
-.gradio-container footer[aria-label="Gradio footer navigation"] > button.settings:hover {
-    color: var(--text-primary); /* 悬停转深海蓝黑：Gradio 自带 hover 把文字刷成近白的 --body-text-color（#DBEAFE），浅底上分不清 */
-}
-/* 齿轮是 data:svg 的 <img>（硬编码 #808080 灰，无头诊断确认）：CSS color 染不动，
-   只能调尺寸 / 悬停加深 / 旋转；svg 选择器命中不了它 */
-.gradio-container footer[aria-label="Gradio footer navigation"] button.settings img {
-    width: 18px;
-    height: 18px;
-    margin: 0;                  /* 归零 Gradio 默认左右 4px 边距，间距改由 gap 控制 */
-    transition: transform 150ms ease, filter 150ms ease;
-}
-.gradio-container footer[aria-label="Gradio footer navigation"] button.settings:hover img {
-    transform: rotate(30deg);
-    filter: brightness(0.4);    /* 悬停加深灰齿轮，与深色文字协调 */
-}
+/* ---- Footer：原生设置按钮只出生在 footer（无头诊断确认的 DOM 事实），已被
+   SHELL_JS 整颗搬进顶栏（.app-topbar）行最右；余下 API / Gradio / 运行记录全是噪音，
+   footer 空了即整体隐藏（连带收回原 44px 条带，单屏可用高度 +44px）---- */
+.gradio-container footer[aria-label="Gradio footer navigation"] { display: none !important; }
+
+/* ---- 设置弹层精简：Gradio 自带弹层（div.api-docs-wrap）只留标题栏 ---- */
+/* 弹层内容 = 一排 .banner-wrap：标题栏（唯一含 h2 .url 的一个）/ 显示主题 /
+   语言 / 渐进式 Web 应用 / Screen Studio beta / 运行记录。标题栏以外整体隐藏；
+   标题旁的应用地址文字（div.url）一并隐藏。主题与语言的锁死见
+   SETTINGS_LOCK_HTML；运行记录另由 GRADIO_RUN_HISTORY=false 环境变量关闭
+   （分区直接不渲染，这里是兜底）。弹层在 .contain 外，必须走 head= 通道 */
+.api-docs-wrap .banner-wrap:not(:has(h2 .url)) { display: none !important; }
+.api-docs-wrap h2 .url { display: none !important; }
 
 /* ---- 窄窗口 ≤768px：解除单屏，恢复整页滚动（组件区规则见 CUSTOM_CSS）---- */
 @media (max-width: 768px) {
@@ -641,6 +650,27 @@ html, body { height: 100%; margin: 0; background: var(--bg-canvas); }
     .gradio-container main.contain { flex: 0 0 auto !important; height: auto; }
 }
 </style>
+"""
+
+# 页壳行为脚本：与 SHELL_CSS 同通道走 head=（两种模式都生效）。Gradio 只在 footer
+# 里生成原生设置按钮（button.settings），Svelte 挂载晚于脚本执行，故用
+# MutationObserver 兜底重查；发现后把整颗按钮（「设置」文字 + 齿轮 img）搬到顶栏
+# .app-topbar 末尾（品牌标题 + 副标题所在行的最右）。行内已有设置按钮时跳过，
+# 防 footer 重渲染产生重复条目
+SHELL_JS = """
+<script>
+(function () {
+    function relocate() {
+        const footer = document.querySelector('footer[aria-label="Gradio footer navigation"]');
+        const btn = footer && footer.querySelector('button.settings');
+        const bar = document.querySelector('.app-topbar');
+        if (!btn || !bar || bar.querySelector('button.settings')) return;
+        bar.appendChild(btn);
+    }
+    new MutationObserver(relocate).observe(document.documentElement, { childList: true, subtree: true });
+    relocate();
+})();
+</script>
 """
 
 CUSTOM_CSS = """
@@ -685,6 +715,40 @@ CUSTOM_CSS = """
 .app-topbar .logo { width: 24px; height: 24px; flex-shrink: 0; display: block; margin-right: -4px; }
 .app-topbar .title { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.2; color: var(--text-primary); }
 .app-topbar .sub { font-size: 13px; font-weight: 400; line-height: 1.4; color: var(--text-muted); }
+
+/* 设置按钮：原生 footer 按钮经 SHELL_JS 整颗搬到顶栏行最右。「设置」13/500 冷雾蓝灰，
+   悬停转深海蓝黑；margin-left:auto 顶到行右缘——桌面端副标题不定宽，靠它才贴最右
+   （≤768px 时 .sub 已 flex:1，auto 无副作用） */
+.app-topbar > button.settings {
+    flex-shrink: 0;
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 4px;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    border-radius: 6px;
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: color 150ms ease;
+}
+.app-topbar > button.settings:hover { color: var(--text-primary); }
+/* 齿轮是 data:svg 的 <img>（硬编码 #808080 灰，无头诊断确认）：CSS color 染不动，
+   只能调尺寸 / 悬停加深 / 旋转；svg 选择器命中不了它 */
+.app-topbar > button.settings img {
+    width: 18px;
+    height: 18px;
+    margin: 0;                  /* 归零 Gradio 默认左右 4px 边距，间距改由 gap 控制 */
+    transition: transform 150ms ease, filter 150ms ease;
+}
+.app-topbar > button.settings:hover img {
+    transform: rotate(30deg);
+    filter: brightness(0.4);    /* 悬停加深灰齿轮，与深色文字协调 */
+}
 
 /* ---- Main：左栏 280px + 右栏弹性 / gap 24 / 上下 20px（三段式的核心区）----
    Gradio 6 DOM 事实（无头诊断确认）：.row 默认 align-items:flex-start 不拉伸子项；
@@ -1084,7 +1148,7 @@ def build_demo() -> gr.Blocks:
     # Gradio 6 把 theme/css 挪到了 launch()，但那会丢掉 `gradio app.py`
     # 开发模式的热重载主题（CLI 自己调 launch，带不上我们的参数），
     # 所以仍传给 Blocks（当前版本仅打一条弃用警告，功能完整）
-    with gr.Blocks(title="fari-rune 视频转文字", theme=build_theme(), css=CUSTOM_CSS, head=SHELL_CSS + FAVICON_HTML) as demo:
+    with gr.Blocks(title="fari-rune 视频转文字", theme=build_theme(), css=CUSTOM_CSS, head=SHELL_CSS + SHELL_JS + FAVICON_HTML + SETTINGS_LOCK_HTML) as demo:
         gr.HTML(
             "<div class='app-topbar'>"
             "<img class='logo' src='/gradio_api/file=assets/icon.svg' alt='' />"
