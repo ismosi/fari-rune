@@ -369,6 +369,66 @@ def history_to_samples(entries: list[dict]) -> list[list[str]]:
     return rows
 
 
+# ---------- 版本管理（outputs 自动 commit） ----------
+
+GIT_TIMEOUT = 30  # 单条 git 命令超时（秒）：卡死也不能拖住转写主流程
+
+
+def _git(*args: str) -> subprocess.CompletedProcess:
+    """在 outputs/ 嵌套仓库里执行一条 git 命令，捕获输出，调用方按返回码处理。"""
+    return subprocess.run(
+        ["git", *args], cwd=OUT_DIR, capture_output=True, text=True, timeout=GIT_TIMEOUT
+    )
+
+
+def ensure_git_repo() -> None:
+    """outputs/ 独立版本库：首次自动 init。
+
+    用嵌套仓库而非并入主仓库：转写内容（个人记录）与代码历史隔离，主仓库
+    推远端不会带出转录文本。排除项写 .git/info/exclude 而非 outputs/.gitignore：
+    同样全局生效，且不在 outputs/ 里落多余文件。提交者身份缺失不在这里兜底
+    编造，由 auto_commit() 报错让用户自己配置。
+    """
+    if not (OUT_DIR / ".git").exists():
+        _git("init")
+    # history.json 每次全量重写（n 条记录转写 n 次就复制 n 份），入库会让仓库
+    # 线性膨胀；.DS_Store 是 Finder 元数据，主仓库的 .gitignore 管不到嵌套仓库
+    exclude = OUT_DIR / ".git" / "info" / "exclude"
+    if exclude.exists() and "history.json" not in exclude.read_text(encoding="utf-8"):
+        with exclude.open("a", encoding="utf-8") as f:
+            f.write("\n# 派生索引与系统文件，不入库\nhistory.json\n.DS_Store\n")
+
+
+def auto_commit(verb: str, title: str) -> str | None:
+    """outputs/ 有变化就提交一条：动词 + 标题（转录 / 更新 / 补回）。
+
+    返回 None 或错误文案，由调用方上状态行红字报错（三个触发点都有状态行）。
+    提交者身份缺失不在服务端编造兑底——没有真实身份就没有可信的提交记录，
+    必须报错让用户自己 git config。无变化（重复转写同一视频且内容一致）
+    静默跳过；纯本地仓库，禁止 push。
+    """
+    try:
+        ensure_git_repo()
+        if not _git("config", "user.name").stdout.strip() or not _git(
+            "config", "user.email"
+        ).stdout.strip():
+            return (
+                "outputs 提交失败：git 提交者身份未配置，"
+                "请先执行 git config --global user.name / user.email"
+            )
+        _git("add", "-A")
+        # --quiet：有暂存改动返回 1，无变化返回 0，0 即无事可提交
+        if _git("diff", "--cached", "--quiet").returncode == 0:
+            return None
+        result = _git("commit", "-m", f"{verb} {title}")
+        if result.returncode == 0:
+            print(f"outputs 已提交：{verb} {title}")
+            return None
+        return f"outputs 提交失败：{result.stderr.strip()}"
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"outputs 自动提交不可用：{e}"
+
+
 # ---------- 主流程 ----------
 
 def _status(text: str, error: bool = False):
@@ -415,10 +475,16 @@ def run(url: str, progress=gr.Progress()):
     if existing := next(
         (e for e in history if e["url"] and normalize_url(e["url"]) == key), None
     ):
-        # TXT 被手动删过就从历史补写，保证下载可用
+        # TXT 被手动删过就从历史补写，保证下载可用；补写也是 outputs 变化，入版本库
+        restored = not (OUT_DIR / f"{sanitize_filename(existing['title'])}.txt").exists()
         out_path = export_entry_txt(existing)
+        git_error = auto_commit("补回", existing["title"]) if restored else None
         yield (
-            _status(f"已转写过：《{existing['title']}》（{existing['time']}），直接复用历史结果"),
+            _status(
+                f"已转写过：《{existing['title']}》（{existing['time']}），直接复用历史结果"
+                + (f"；{git_error}" if git_error else ""),
+                error=bool(git_error),
+            ),
             existing["text"],
             gr.DownloadButton(value=str(out_path), interactive=True),
             gr.skip(),  # 历史无变化，目录不动
@@ -447,6 +513,8 @@ def run(url: str, progress=gr.Progress()):
 
         text = format_text("".join(texts))
         out_path = OUT_DIR / f"{sanitize_filename(title)}.txt"
+        # 写前判定新旧：同名文件已在 = 重转同一视频（覆盖），commit 动词据此区分
+        verb = "更新" if out_path.exists() else "转录"
         out_path.write_text(text, encoding="utf-8")
 
         entry = {"url": url, "title": title, "text": text, "time": time.strftime(TIME_FMT)}
@@ -454,12 +522,17 @@ def run(url: str, progress=gr.Progress()):
         history = [e for e in history if not e["url"] or normalize_url(e["url"]) != key]
         history.insert(0, entry)
         save_history(history)
+        # 结果落盘后同步入 outputs 版本库；提交失败不改写主结果，只在完成状态里报错
+        git_error = auto_commit(verb, title)
         # Gradio 6 的 Dataset 收到裸样本列表只会"查找"不会"替换"（触发警告且返回 None），
         # 必须回传新的 Dataset 对象，左侧目录才会立即显示新条目
         # 下载按钮初始 interactive=False，完成后才挂上文件并启用；
         # 过程中 yield None 会清掉上一次的下载文件，与原 gr.File 行为一致
         yield (
-            _status(f"④/④ 完成：《{title}》"),
+            _status(
+                f"④/④ 完成：《{title}》" + (f"；{git_error}" if git_error else ""),
+                error=bool(git_error),
+            ),
             text,
             gr.DownloadButton(value=str(out_path), interactive=True),
             gr.Dataset(samples=history_to_samples(history)),
@@ -494,11 +567,15 @@ def on_history_select(index: int, history: list[dict]):
         return "", "", "", gr.DownloadButton(interactive=False), gr.Button(interactive=False)
     e = history[index]
     time_note = f"（{e['time']}）" if e["time"] else ""
+    # TXT 被手动删过时 export 会补写；补写也是 outputs 变化，同样入版本库
+    restored = not (OUT_DIR / f"{sanitize_filename(e['title'])}.txt").exists()
+    path = export_entry_txt(e)
+    git_error = auto_commit("补回", e["title"]) if restored else None
     return (
         e["url"],
-        f"已转写：《{e['title']}》{time_note}",
+        f"已转写：《{e['title']}》{time_note}" + (f"；{git_error}" if git_error else ""),
         e["text"],
-        gr.DownloadButton(value=str(export_entry_txt(e)), interactive=True),
+        gr.DownloadButton(value=str(path), interactive=True),
         gr.Button(interactive=True),
     )
 
